@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Chat</title>
+  <title>Big Screen Chat</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     body {
       margin: 0;
@@ -98,29 +99,36 @@
 </head>
 <body>
 
-  <div id="header">Chat</div>
+  <div id="header">Big Screen Chat</div>
   <div id="screen"></div>
 
   <div id="input-area">
-    <input type="text" id="message-input" placeholder="Type your message and press Enter..." autocomplete="off">
+    <input type="text" id="message-input" placeholder="Type message and press Enter..." autocomplete="off">
     <button onclick="sendMessage()">Send</button>
   </div>
 
   <script>
-    let myName = '';
-    let messages = JSON.parse(localStorage.getItem('bigChatMessages') || '[]');
-    let konamiCode = [];
-    const konamiSequence = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown'];
+    // ==================== YOUR SUPABASE SETTINGS ====================
+    const SUPABASE_URL = "https://txxinlnngrhkheawtfsk.supabase.co";
+    const SUPABASE_ANON_KEY = "esb_publishable_IqJaMre9t4ySYsNqDZ38eg_ksJRIpXR";
+
+    const { createClient } = Supabase;
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    let myName = localStorage.getItem('bigChatName') || '';
 
     const screen = document.getElementById('screen');
     const input = document.getElementById('message-input');
 
     function askForName() {
-      myName = prompt("Enter your name for the chat:") || "Guest";
-      if (myName.trim() === "") myName = "Guest";
+      if (!myName) {
+        myName = prompt("Enter your name for the chat:") || "Guest";
+        if (myName.trim() === "") myName = "Guest";
+        localStorage.setItem('bigChatName', myName);
+      }
     }
 
-    function addMessage(name, text, isMe) {
+    function addMessage(name, text, isMe = false) {
       const div = document.createElement('div');
       div.className = `message ${isMe ? 'me' : ''}`;
       div.innerHTML = `<div class="name">${name}</div><div>${text}</div>`;
@@ -136,56 +144,91 @@
       screen.scrollTop = screen.scrollHeight;
     }
 
-    function sendMessage() {
+    // Send message
+    async function sendMessage() {
       const text = input.value.trim();
       if (!text) return;
 
-      if (!myName) askForName();
+      askForName();
 
-      const msg = { name: myName, text: text };
-      messages.push(msg);
-      localStorage.setItem('bigChatMessages', JSON.stringify(messages));
+      const { error } = await supabase
+        .from('messages')
+        .insert({ name: myName, text: text });
 
-      addMessage(myName, text, true);
-      input.value = '';
-    }
-
-    function loadMessages() {
-      screen.innerHTML = '';
-      messages.forEach(msg => {
-        addMessage(msg.name, msg.text, msg.name === myName);
-      });
-    }
-
-    function clearScreen() {
-      if (confirm("Clear the entire big screen?")) {
-        messages = [];
-        localStorage.setItem('bigChatMessages', '[]');
-        screen.innerHTML = '';
-        addSystem(`Screen cleared by ${myName}`);
+      if (error) {
+        console.error(error);
+        addSystem("Failed to send: " + error.message);
+      } else {
+        input.value = '';
       }
     }
 
-    // Konami code
-    document.addEventListener('keydown', (e) => {
-      konamiCode.push(e.key);
-      if (konamiCode.length > 4) konamiCode.shift();
-      if (JSON.stringify(konamiCode) === JSON.stringify(konamiSequence)) {
-        clearScreen();
-        konamiCode = [];
-      }
-    });
+    // Real-time listener
+    function listenToMessages() {
+      supabase
+        .channel('big-chat')
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'messages' },
+          (payload) => {
+            const msg = payload.new;
+            const isMe = msg.name === myName;
+            addMessage(msg.name, msg.text, isMe);
+          }
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            addSystem("✅ Connected - You can now chat across devices");
+          }
+        });
+    }
 
-    // Enter key
+    // Load previous messages
+    async function loadMessages() {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error(error);
+      } else if (data) {
+        data.forEach(msg => {
+          addMessage(msg.name, msg.text, msg.name === myName);
+        });
+      }
+    }
+
+    // Enter key support
     input.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') sendMessage();
     });
 
-    // Start the app
-    window.onload = () => {
+    // Konami code: Up ↑ Up ↑ Down ↓ Down ↓  to clear screen
+    let konamiCode = [];
+    const konamiSequence = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown'];
+
+    document.addEventListener('keydown', (e) => {
+      konamiCode.push(e.key);
+      if (konamiCode.length > 4) konamiCode.shift();
+
+      if (JSON.stringify(konamiCode) === JSON.stringify(konamiSequence)) {
+        if (confirm("Clear the big screen for everyone?")) {
+          supabase.from('messages').delete().neq('id', 0);
+          screen.innerHTML = '';
+          addSystem(`Screen cleared by ${myName}`);
+        }
+        konamiCode = [];
+      }
+    });
+
+    // Start everything
+    window.onload = async () => {
       askForName();
-      loadMessages();
-      addSystem(`Welcome, ${myName}! Type below and hit Enter or Send.`);
+      addSystem(`Welcome, ${myName}!`);
+
+      await loadMessages();
+      listenToMessages();
     };
   </script>
 </body>
